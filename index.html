@@ -1,0 +1,1764 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  ShoppingBag, LayoutDashboard, History, Package, Utensils, 
+  Receipt, BarChart3, Calendar, Settings, User, LogOut, Menu, X, 
+  Plus, Minus, Trash2, Printer, CheckCircle, AlertTriangle, RefreshCw, 
+  Download, Upload, ChevronRight, DollarSign, Edit3, Save, Search,
+  ArrowUpRight, ArrowDownRight, ShieldCheck, Wifi, WifiOff, Cloud, 
+  CloudOff, Smartphone, Lock, KeyRound, Mail, Check, AlertCircle
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, 
+  sendPasswordResetEmail, signOut, onAuthStateChanged, 
+  signInWithCustomToken, signInAnonymously, GoogleAuthProvider, signInWithPopup
+} from 'firebase/auth';
+import { 
+  getFirestore, doc, setDoc, getDoc, collection, onSnapshot, 
+  addDoc, updateDoc, deleteDoc, writeBatch
+} from 'firebase/firestore';
+
+// --- FIREBASE CLOUD CONFIGURATION ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "AIzaSyDummyKeyForPreview",
+      authDomain: "bubur-ayam-pos.firebaseapp.com",
+      projectId: "bubur-ayam-pos",
+      storageBucket: "bubur-ayam-pos.appspot.com",
+      messagingSenderId: "123456789",
+      appId: "1:123456789:web:abcdef"
+    };
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'bubur-ayam-pos-single-owner';
+
+// --- INITIAL DEFAULT STATES ---
+const DEFAULT_SETTINGS = {
+  storeName: 'BUBUR AYAM POS',
+  tagline: 'SINGLE OWNER CLOUD PRO',
+  address: 'Jl. Merdeka No. 45, Bandung',
+  phone: '0812-3456-7890',
+  portionPrice: 13000,
+  satePrices: {
+    ampela: 2000,
+    ati: 2000,
+    usus: 2000,
+    telurPuyuh: 2000
+  },
+  receiptPaperSize: '58mm',
+  footerText: 'Terima kasih atas kunjungan Anda!'
+};
+
+const DEFAULT_INVENTORY = [
+  { id: '1', name: 'Beras Super', category: 'Bahan Utama', stock: 15, unit: 'kg', buyPrice: 14000, minStock: 5 },
+  { id: '2', name: 'Daging Ayam', category: 'Bahan Utama', stock: 8, unit: 'kg', buyPrice: 38000, minStock: 3 },
+  { id: '3', name: 'Styrofoam Mangkok', category: 'Kemasan', stock: 120, unit: 'pcs', buyPrice: 350, minStock: 30 },
+  { id: '4', name: 'Sendok Plastik', category: 'Kemasan', stock: 150, unit: 'pcs', buyPrice: 120, minStock: 50 },
+  { id: '5', name: 'Kantong Kresek', category: 'Kemasan', stock: 100, unit: 'pcs', buyPrice: 150, minStock: 25 },
+  { id: '6', name: 'Kerupuk Bawang', category: 'Topping', stock: 5, unit: 'kg', buyPrice: 24000, minStock: 2 },
+  { id: '7', name: 'Kacang Tanah', category: 'Topping', stock: 4, unit: 'kg', buyPrice: 28000, minStock: 2 },
+  { id: '8', name: 'Sate Ampela', category: 'Sate', stock: 50, unit: 'tusuk', buyPrice: 1000, minStock: 10 },
+  { id: '9', name: 'Sate Ati', category: 'Sate', stock: 50, unit: 'tusuk', buyPrice: 1000, minStock: 10 },
+  { id: '10', name: 'Sate Usus', category: 'Sate', stock: 60, unit: 'tusuk', buyPrice: 900, minStock: 10 },
+  { id: '11', name: 'Sate Telur Puyuh', category: 'Sate', stock: 40, unit: 'tusuk', buyPrice: 1200, minStock: 10 }
+];
+
+const DEFAULT_RECIPE = [
+  { inventoryId: '1', name: 'Beras Super', qtyPerPortion: 0.1, unit: 'kg' },
+  { inventoryId: '2', name: 'Daging Ayam', qtyPerPortion: 0.05, unit: 'kg' },
+  { inventoryId: '3', name: 'Styrofoam Mangkok', qtyPerPortion: 1, unit: 'pcs' },
+  { inventoryId: '4', name: 'Sendok Plastik', qtyPerPortion: 1, unit: 'pcs' },
+  { inventoryId: '5', name: 'Kantong Kresek', qtyPerPortion: 1, unit: 'pcs' },
+  { inventoryId: '6', name: 'Kerupuk Bawang', qtyPerPortion: 0.02, unit: 'kg' },
+  { inventoryId: '7', name: 'Kacang Tanah', qtyPerPortion: 0.015, unit: 'kg' }
+];
+
+const formatRp = (amount) => {
+  return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amount || 0);
+};
+
+export default function App() {
+  // Navigation & UI States
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('pos');
+  const [toast, setToast] = useState(null);
+
+  // Single-Owner Auth States
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register' | 'reset'
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  // Network & Multi-Device Sync States
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [syncStatus, setSyncStatus] = useState('SYNCED'); // 'SYNCED' | 'SYNCING' | 'OFFLINE' | 'CONFLICT'
+  const [offlineQueue, setOfflineQueue] = useState([]);
+  const [syncConflicts, setSyncConflicts] = useState([]);
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+
+  // Cloud Business Data States
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [inventory, setInventory] = useState(DEFAULT_INVENTORY);
+  const [recipe, setRecipe] = useState(DEFAULT_RECIPE);
+  const [transactions, setTransactions] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  // --- PWA INSTALL & MANIFEST INJECTION ---
+  useEffect(() => {
+    // Inject dynamic PWA manifest for Android/Desktop Home Screen install
+    const manifest = {
+      name: "BUBUR AYAM POS - Single Owner Pro",
+      short_name: "Bubur POS",
+      start_url: ".",
+      display: "standalone",
+      background_color: "#1c1917",
+      theme_color: "#f59e0b",
+      icons: [{
+        src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23f59e0b'/><text y='.9em' x='12' font-size='75'>🥣</text></svg>",
+        sizes: "192x192",
+        type: "image/svg+xml"
+      }]
+    };
+    const stringManifest = JSON.stringify(manifest);
+    const blob = new Blob([stringManifest], { type: 'application/json' });
+    const manifestURL = URL.createObjectURL(blob);
+    let link = document.querySelector('link[rel="manifest"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'manifest';
+      document.head.appendChild(link);
+    }
+    link.href = manifestURL;
+
+    const handleBeforeInstall = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
+  const handleInstallPWA = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      showToast("Aplikasi berhasil dipasang di perangkat!");
+    }
+  };
+
+  // --- ONLINE / OFFLINE MONITOR ---
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setSyncStatus('SYNCING');
+      showToast("Koneksi kembali! Menyinkronkan data ke cloud...", "success");
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setSyncStatus('OFFLINE');
+      showToast("Mode OFFLINE aktif. Transaksi disimpan dalam antrean lokal.", "warning");
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // --- SINGLE-OWNER FIREBASE AUTHENTICATION ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        }
+      } catch (err) {
+        console.error("Auth init error:", err);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- REAL-TIME MULTI-DEVICE CLOUD SYNCHRONIZATION ---
+  useEffect(() => {
+    if (!user) return;
+    setSyncStatus(isOnline ? 'SYNCING' : 'OFFLINE');
+
+    const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+
+    // 1. Sync Settings & Recipe
+    const unsubConfig = onSnapshot(
+      doc(db, ownerBasePath, 'config', 'main'),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.settings) setSettings(data.settings);
+          if (data.recipe) setRecipe(data.recipe);
+        } else {
+          // Initialize owner default config on first login
+          setDoc(doc(db, ownerBasePath, 'config', 'main'), {
+            settings: DEFAULT_SETTINGS,
+            recipe: DEFAULT_RECIPE,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        if (navigator.onLine) setSyncStatus('SYNCED');
+      },
+      (err) => {
+        console.error("Config sync error:", err);
+        setSyncStatus('OFFLINE');
+      }
+    );
+
+    // 2. Sync Inventory
+    const unsubInventory = onSnapshot(
+      collection(db, ownerBasePath, 'inventory'),
+      (snapshot) => {
+        if (snapshot.empty) {
+          // Seed initial inventory for new owner account
+          const batch = writeBatch(db);
+          DEFAULT_INVENTORY.forEach((item) => {
+            batch.set(doc(db, ownerBasePath, 'inventory', item.id), item);
+          });
+          batch.commit();
+        } else {
+          const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          list.sort((a, b) => Number(a.id) - Number(b.id));
+          setInventory(list);
+        }
+      },
+      (err) => console.error("Inventory sync error:", err)
+    );
+
+    // 3. Sync Transactions (Real-time across Android & Laptop)
+    const unsubTransactions = onSnapshot(
+      collection(db, ownerBasePath, 'transactions'),
+      (snapshot) => {
+        const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => new Date(b.date) - new Date(a.date));
+        setTransactions(list);
+        if (navigator.onLine) setSyncStatus('SYNCED');
+      },
+      (err) => console.error("Transactions sync error:", err)
+    );
+
+    // 4. Sync Expenses
+    const unsubExpenses = onSnapshot(
+      collection(db, ownerBasePath, 'expenses'),
+      (snapshot) => {
+        const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => new Date(b.date) - new Date(a.date));
+        setExpenses(list);
+      },
+      (err) => console.error("Expenses sync error:", err)
+    );
+
+    return () => {
+      unsubConfig();
+      unsubInventory();
+      unsubTransactions();
+      unsubExpenses();
+    };
+  }, [user, isOnline]);
+
+  // --- OFFLINE QUEUE FLUSH ENGINE (AUTO-SYNC WHEN ONLINE) ---
+  useEffect(() => {
+    if (!user || !isOnline || offlineQueue.length === 0) return;
+
+    const flushOfflineQueue = async () => {
+      setSyncStatus('SYNCING');
+      const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+      const remainingQueue = [];
+      const detectedConflicts = [];
+
+      for (const queuedItem of offlineQueue) {
+        try {
+          // Prevent duplicate transaction IDs
+          const trxRef = doc(db, ownerBasePath, 'transactions', queuedItem.transaction.id);
+          const existingSnap = await getDoc(trxRef);
+
+          if (existingSnap.exists()) {
+            // Already synced, skip to prevent duplicate
+            continue;
+          }
+
+          // Check stock conflicts before committing
+          const batch = writeBatch(db);
+          let hasStockConflict = false;
+
+          for (const deduction of queuedItem.stockDeductions) {
+            const invRef = doc(db, ownerBasePath, 'inventory', deduction.id);
+            const invSnap = await getDoc(invRef);
+            if (invSnap.exists()) {
+              const currentCloudStock = invSnap.data().stock || 0;
+              if (currentCloudStock < deduction.amount) {
+                hasStockConflict = true;
+                detectedConflicts.push({
+                  trxId: queuedItem.transaction.id,
+                  itemName: invSnap.data().name,
+                  needed: deduction.amount,
+                  available: currentCloudStock,
+                  timestamp: queuedItem.transaction.date
+                });
+              }
+              batch.update(invRef, {
+                stock: Math.max(0, currentCloudStock - deduction.amount)
+              });
+            }
+          }
+
+          batch.set(trxRef, {
+            ...queuedItem.transaction,
+            syncedAt: new Date().toISOString(),
+            syncNote: hasStockConflict ? 'Tersinkron dengan peringatan stok minus' : 'Tersinkron dari antrean offline'
+          });
+
+          await batch.commit();
+        } catch (err) {
+          console.error("Failed syncing queued item:", queuedItem.transaction.id, err);
+          remainingQueue.push(queuedItem);
+        }
+      }
+
+      setOfflineQueue(remainingQueue);
+      if (detectedConflicts.length > 0) {
+        setSyncConflicts(prev => [...detectedConflicts, ...prev]);
+        setSyncStatus('CONFLICT');
+        showToast(`Peringatan: ${detectedConflicts.length} konflik stok terdeteksi saat sinkronisasi!`, "warning");
+      } else {
+        setSyncStatus('SYNCED');
+        showToast("Semua transaksi offline berhasil tersinkron ke Cloud!");
+      }
+    };
+
+    flushOfflineQueue();
+  }, [isOnline, offlineQueue, user]);
+
+  // --- AUTH HANDLERS ---
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (authMode === 'login') {
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+        showToast("Berhasil masuk ke akun Pemilik!");
+      } else if (authMode === 'register') {
+        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        showToast("Akun Pemilik baru berhasil dibuat!");
+      } else if (authMode === 'reset') {
+        await sendPasswordResetEmail(auth, authEmail);
+        showToast("Tautan reset password telah dikirim ke email Anda!");
+        setAuthMode('login');
+      }
+    } catch (err) {
+      setAuthError(err.message || "Terjadi kesalahan autentikasi.");
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setAuthError('');
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      showToast("Berhasil masuk dengan Akun Google!");
+    } catch (err) {
+      // Fallback for sandboxed iframe environments
+      try {
+        await signInAnonymously(auth);
+        showToast("Masuk dalam sesi Single-Owner Cloud (Demo Mode)");
+      } catch (fallbackErr) {
+        setAuthError(err.message);
+      }
+    }
+  };
+
+  const handleLogout = async () => {
+    if (offlineQueue.length > 0) {
+      showToast("Peringatan: Masih ada antrean transaksi offline yang belum tersinkron!", "warning");
+      return;
+    }
+    await signOut(auth);
+    showToast("Anda telah keluar dari sistem.");
+  };
+
+  // --- COMPUTE CURRENT PORTION HPP ---
+  const portionHpp = useMemo(() => {
+    return recipe.reduce((acc, item) => {
+      const invItem = inventory.find(i => i.id === item.inventoryId);
+      if (!invItem) return acc;
+      return acc + ((invItem.buyPrice || 0) * item.qtyPerPortion);
+    }, 0);
+  }, [recipe, inventory]);
+
+  // --- CLOUD WRITE HELPERS ---
+  const handleSaveTransaction = async (newTrx, stockDeductions) => {
+    if (!user) return;
+    const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+
+    // If offline, queue locally and update local view state optimistically
+    if (!isOnline) {
+      const offlineTrx = { ...newTrx, syncPending: true };
+      setTransactions(prev => [offlineTrx, ...prev]);
+      setInventory(prev => prev.map(item => {
+        const ded = stockDeductions.find(d => d.id === item.id);
+        return ded ? { ...item, stock: Math.max(0, item.stock - ded.amount) } : item;
+      }));
+      setOfflineQueue(prev => [...prev, { transaction: newTrx, stockDeductions }]);
+      showToast("Tersimpan di Antrean Offline. Akan sinkron otomatis saat online.", "warning");
+      return;
+    }
+
+    // Online direct cloud atomic transaction
+    try {
+      setSyncStatus('SYNCING');
+      const batch = writeBatch(db);
+      const trxRef = doc(db, ownerBasePath, 'transactions', newTrx.id);
+      batch.set(trxRef, { ...newTrx, syncedAt: new Date().toISOString() });
+
+      stockDeductions.forEach(ded => {
+        const invItem = inventory.find(i => i.id === ded.id);
+        if (invItem) {
+          const invRef = doc(db, ownerBasePath, 'inventory', ded.id);
+          batch.update(invRef, { stock: Math.max(0, invItem.stock - ded.amount) });
+        }
+      });
+
+      await batch.commit();
+      setSyncStatus('SYNCED');
+      showToast("Transaksi tersimpan & tersinkron ke Cloud!");
+    } catch (err) {
+      console.error("Cloud save failed, falling back to offline queue:", err);
+      setOfflineQueue(prev => [...prev, { transaction: newTrx, stockDeductions }]);
+      setSyncStatus('OFFLINE');
+      showToast("Gangguan jaringan: Transaksi dialihkan ke antrean offline.", "warning");
+    }
+  };
+
+  const handleVoidTransaction = async (trxId, reason) => {
+    if (!user || !isOnline) {
+      showToast("Pembatalan transaksi memerlukan koneksi internet aktif.", "error");
+      return;
+    }
+    const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+    const targetTrx = transactions.find(t => t.id === trxId);
+    if (!targetTrx || targetTrx.status === 'VOIDED') return;
+
+    try {
+      setSyncStatus('SYNCING');
+      const batch = writeBatch(db);
+      batch.update(doc(db, ownerBasePath, 'transactions', trxId), {
+        status: 'VOIDED',
+        voidReason: reason,
+        voidedAt: new Date().toISOString()
+      });
+
+      // Restore stock automatically
+      recipe.forEach(item => {
+        const invItem = inventory.find(i => i.id === item.inventoryId);
+        if (invItem) {
+          batch.update(doc(db, ownerBasePath, 'inventory', invItem.id), {
+            stock: invItem.stock + (item.qtyPerPortion * targetTrx.portions)
+          });
+        }
+      });
+
+      const sateMapping = { ampela: '8', ati: '9', usus: '10', telurPuyuh: '11' };
+      Object.entries(targetTrx.sate || {}).forEach(([key, count]) => {
+        if (count > 0) {
+          const invItem = inventory.find(i => i.id === sateMapping[key]);
+          if (invItem) {
+            batch.update(doc(db, ownerBasePath, 'inventory', invItem.id), {
+              stock: invItem.stock + count
+            });
+          }
+        }
+      });
+
+      await batch.commit();
+      setSyncStatus('SYNCED');
+      showToast("Transaksi dibatalkan & stok otomatis dikembalikan!", "warning");
+    } catch (err) {
+      showToast("Gagal membatalkan transaksi: " + err.message, "error");
+    }
+  };
+
+  const handleUpdateInventoryItem = async (updatedItem) => {
+    if (!user) return;
+    const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+    if (!isOnline) {
+      showToast("Perubahan stok/harga membutuhkan koneksi internet agar tidak bentrok antar perangkat.", "error");
+      return;
+    }
+    try {
+      setSyncStatus('SYNCING');
+      await setDoc(doc(db, ownerBasePath, 'inventory', updatedItem.id), updatedItem);
+      setSyncStatus('SYNCED');
+      showToast("Data bahan baku tersinkron ke semua perangkat!");
+    } catch (err) {
+      showToast("Gagal menyimpan perubahan bahan.", "error");
+    }
+  };
+
+  const handleSaveConfig = async (newSettings, newRecipe) => {
+    if (!user || !isOnline) {
+      showToast("Pengaturan hanya dapat diubah saat terhubung ke internet.", "error");
+      return;
+    }
+    const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+    try {
+      setSyncStatus('SYNCING');
+      await setDoc(doc(db, ownerBasePath, 'config', 'main'), {
+        settings: newSettings,
+        recipe: newRecipe,
+        updatedAt: new Date().toISOString()
+      });
+      setSyncStatus('SYNCED');
+      showToast("Pengaturan usaha tersinkron ke Cloud!");
+    } catch (err) {
+      showToast("Gagal menyimpan pengaturan.", "error");
+    }
+  };
+
+  const handleAddExpense = async (newExp) => {
+    if (!user || !isOnline) {
+      showToast("Pencatatan pengeluaran membutuhkan koneksi internet.", "error");
+      return;
+    }
+    const ownerBasePath = `artifacts/${appId}/users/${user.uid}`;
+    try {
+      setSyncStatus('SYNCING');
+      await setDoc(doc(db, ownerBasePath, 'expenses', newExp.id), newExp);
+      setSyncStatus('SYNCED');
+      showToast("Pengeluaran berhasil dicatat ke Cloud!");
+    } catch (err) {
+      showToast("Gagal mencatat pengeluaran.", "error");
+    }
+  };
+
+  // --- LOADING SCREEN ---
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-stone-900 flex flex-col items-center justify-center text-white p-4">
+        <div className="w-16 h-16 rounded-2xl bg-amber-500 flex items-center justify-center text-3xl shadow-xl animate-pulse mb-4">
+          🥣
+        </div>
+        <h1 className="font-black text-lg tracking-wider">BUBUR AYAM POS</h1>
+        <p className="text-xs text-stone-400 mt-1">Memuat sesi keamanan Pemilik...</p>
+      </div>
+    );
+  }
+
+  // --- SINGLE-OWNER LOGIN GATEWAY ---
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4 font-sans">
+        <div className="bg-white w-full max-w-md rounded-3xl p-6 sm:p-8 shadow-2xl border border-stone-200 space-y-6">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500 mx-auto flex items-center justify-center text-3xl shadow-lg shadow-amber-500/30">
+              🥣
+            </div>
+            <h1 className="font-black text-xl text-stone-900 tracking-tight">BUBUR AYAM POS</h1>
+            <p className="text-xs font-semibold text-amber-600 uppercase tracking-widest">Single Owner Multi-Device Cloud</p>
+            <p className="text-xs text-stone-500">Satu akun pemilik untuk akses sinkron dari HP Android & Laptop</p>
+          </div>
+
+          {authError && (
+            <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-stone-700 mb-1">Email Pemilik (Gmail)</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+                <input 
+                  type="email" 
+                  required
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="pemilik@gmail.com"
+                  className="w-full pl-9 pr-3 py-2 border border-stone-300 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 outline-none"
+                />
+              </div>
+            </div>
+
+            {authMode !== 'reset' && (
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-xs font-bold text-stone-700">Password</label>
+                  <button 
+                    type="button" 
+                    onClick={() => setAuthMode('reset')}
+                    className="text-[11px] font-semibold text-amber-600 hover:underline"
+                  >
+                    Lupa password?
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+                  <input 
+                    type="password" 
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="Minimal 6 karakter"
+                    className="w-full pl-9 pr-3 py-2 border border-stone-300 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 outline-none"
+                  />
+                </div>
+              </div>
+            )}
+
+            <button 
+              type="submit" 
+              className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-stone-950 font-black text-xs rounded-xl shadow-lg transition-all"
+            >
+              {authMode === 'login' && 'MASUK KE SISTEM PEMILIK'}
+              {authMode === 'register' && 'DAFTAR AKUN PEMILIK BARU'}
+              {authMode === 'reset' && 'KIRIM EMAIL RESET PASSWORD'}
+            </button>
+          </form>
+
+          {authMode !== 'reset' && (
+            <>
+              <div className="relative flex py-1 items-center">
+                <div className="flex-grow border-t border-stone-200"></div>
+                <span className="flex-shrink mx-3 text-[10px] font-bold text-stone-400 uppercase">Atau</span>
+                <div className="flex-grow border-t border-stone-200"></div>
+              </div>
+
+              <button 
+                type="button"
+                onClick={handleGoogleLogin}
+                className="w-full py-2.5 bg-white hover:bg-stone-50 text-stone-800 border border-stone-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm"
+              >
+                <ShieldCheck className="w-4 h-4 text-amber-600" />
+                <span>Lanjutkan dengan Akun Google (OAuth)</span>
+              </button>
+            </>
+          )}
+
+          <div className="text-center text-xs text-stone-600 pt-2 border-t border-stone-100">
+            {authMode === 'login' ? (
+              <p>Belum punya akun pemilik? <button onClick={() => setAuthMode('register')} className="font-bold text-amber-600 hover:underline">Daftar sekarang</button></p>
+            ) : (
+              <p>Sudah punya akun? <button onClick={() => setAuthMode('login')} className="font-bold text-amber-600 hover:underline">Kembali ke Login</button></p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const menuItems = [
+    { id: 'pos', label: 'Kasir Smart POS', icon: ShoppingBag },
+    { id: 'dashboard', label: 'Dashboard Keuangan', icon: LayoutDashboard },
+    { id: 'history', label: 'Riwayat Transaksi', icon: History },
+    { id: 'inventory', label: 'Stok & Persediaan', icon: Package },
+    { id: 'recipe', label: 'HPP & Resep (Custom)', icon: Utensils },
+    { id: 'expenses', label: 'Pengeluaran Usaha', icon: Receipt },
+    { id: 'financials', label: 'Laporan Laba Rugi', icon: BarChart3 },
+    { id: 'archive', label: 'Arsip Harian & Bulan', icon: Calendar },
+    { id: 'settings', label: 'Pengaturan & Keamanan', icon: Settings }
+  ];
+
+  // Merge cloud transactions with pending offline queue items for unified display
+  const allDisplayedTransactions = [
+    ...offlineQueue.map(q => ({ ...q.transaction, syncPending: true })),
+    ...transactions.filter(t => !offlineQueue.some(q => q.transaction.id === t.id))
+  ];
+
+  return (
+    <div className="min-h-screen bg-stone-100 flex font-sans text-stone-800 antialiased selection:bg-amber-500 selection:text-white">
+      {/* SIDEBAR NAVIGATION */}
+      <aside className={`fixed inset-y-0 left-0 z-30 bg-stone-900 text-stone-300 w-64 transition-all duration-300 transform ${
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+      } md:relative md:translate-x-0 flex flex-col justify-between shadow-2xl`}>
+        <div>
+          {/* Sidebar Header */}
+          <div className="p-4 border-b border-stone-800 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center font-black text-stone-900 text-xl shadow-lg shadow-amber-500/20">
+                🥣
+              </div>
+              <div>
+                <h2 className="font-black text-white tracking-wide text-sm leading-tight">{settings.storeName}</h2>
+                <p className="text-[10px] text-amber-500 font-bold uppercase tracking-wider">{settings.tagline}</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setSidebarOpen(false)}
+              className="md:hidden p-1.5 text-stone-400 hover:text-white rounded-lg hover:bg-stone-800"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* PWA Install Prompt Banner inside Sidebar if available */}
+          {deferredPrompt && (
+            <div className="mx-3 mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="text-[11px] font-semibold text-amber-200">Pasang Aplikasi HP</span>
+              </div>
+              <button 
+                onClick={handleInstallPWA}
+                className="px-2.5 py-1 bg-amber-500 text-stone-950 font-bold text-[10px] rounded-lg hover:bg-amber-400"
+              >
+                Install
+              </button>
+            </div>
+          )}
+
+          {/* Navigation Links */}
+          <nav className="p-3 space-y-1">
+            {menuItems.map(item => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActiveTab(item.id);
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium text-xs transition-all duration-200 ${
+                    isActive 
+                      ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-stone-950 font-bold shadow-md shadow-amber-500/20' 
+                      : 'hover:bg-stone-800 hover:text-white text-stone-400'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-stone-950' : 'text-stone-400'}`} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+
+        {/* Single-Owner Account Card */}
+        <div className="p-3 border-t border-stone-800 bg-stone-950/50 space-y-2">
+          <div className="flex items-center justify-between p-2 rounded-xl bg-stone-900 border border-stone-800">
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <div className="w-8 h-8 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center justify-center font-bold text-xs shrink-0">
+                {(user.email || 'OW').substring(0,2).toUpperCase()}
+              </div>
+              <div className="truncate">
+                <p className="text-xs font-semibold text-white truncate">{user.email || 'Pemilik Utama'}</p>
+                <p className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" /> Single Owner
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* MAIN CONTENT WRAPPER */}
+      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+        {/* Toast Alert */}
+        {toast && (
+          <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-2xl text-white transition-all ${
+            toast.type === 'error' ? 'bg-red-600' : toast.type === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'
+          }`}>
+            {toast.type === 'error' ? <AlertTriangle className="w-5 h-5"/> : <CheckCircle className="w-5 h-5"/>}
+            <span className="font-semibold text-xs tracking-wide">{toast.message}</span>
+          </div>
+        )}
+
+        {/* MOBILE BACKDROP */}
+        {sidebarOpen && (
+          <div 
+            className="fixed inset-0 bg-black/50 z-20 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* HEADER BAR WITH MULTI-DEVICE SYNC INDICATOR */}
+        <header className="bg-white border-b border-stone-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-2 rounded-lg hover:bg-stone-100 text-stone-700 transition-colors"
+              title="Menu Navigasi"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <h1 className="text-base sm:text-lg font-bold text-stone-800 tracking-tight truncate">
+              {menuItems.find(item => item.id === activeTab)?.label || 'Bubur Ayam POS'}
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Real-time Cloud Sync Status Pill */}
+            <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold border ${
+              !isOnline || syncStatus === 'OFFLINE'
+                ? 'bg-red-50 text-red-700 border-red-200'
+                : syncStatus === 'SYNCING'
+                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                : syncStatus === 'CONFLICT'
+                ? 'bg-orange-50 text-orange-700 border-orange-300'
+                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+            }`}>
+              {!isOnline || syncStatus === 'OFFLINE' ? (
+                <>
+                  <WifiOff className="w-3.5 h-3.5 text-red-600" />
+                  <span>OFFLINE ({offlineQueue.length} Antrean)</span>
+                </>
+              ) : syncStatus === 'SYNCING' ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-600" />
+                  <span className="hidden sm:inline">Menyinkronkan...</span>
+                </>
+              ) : syncStatus === 'CONFLICT' ? (
+                <>
+                  <AlertTriangle className="w-3.5 h-3.5 text-orange-600" />
+                  <span>Konflik Stok ({syncConflicts.length})</span>
+                </>
+              ) : (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+                  <span className="hidden sm:inline">Cloud Tersinkron</span>
+                </>
+              )}
+            </div>
+
+            <button 
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Keluar</span>
+            </button>
+          </div>
+        </header>
+
+        {/* CONFLICT ALERT BANNER IF OFFLINE SYNC HAD STOCK MISMATCH */}
+        {syncConflicts.length > 0 && (
+          <div className="mx-4 mt-4 p-4 bg-orange-50 border border-orange-300 rounded-2xl flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-orange-900 space-y-1">
+                <p className="font-bold">Peringatan Konflik Sinkronisasi Stok ({syncConflicts.length} item)</p>
+                <p>Transaksi offline berhasil dicatat, namun stok cloud saat sinkronisasi lebih kecil dari pemakaian:</p>
+                <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
+                  {syncConflicts.map((c, idx) => (
+                    <li key={idx}>
+                      <strong>{c.trxId}</strong>: {c.itemName} (Butuh {c.needed}, Tersedia di Cloud {c.available})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <button 
+              onClick={() => {
+                setSyncConflicts([]);
+                setSyncStatus(isOnline ? 'SYNCED' : 'OFFLINE');
+              }}
+              className="px-3 py-1.5 bg-orange-600 text-white font-bold text-[11px] rounded-xl shrink-0"
+            >
+              Tandai Selesai
+            </button>
+          </div>
+        )}
+
+        {/* ACTIVE VIEW TAB CONTENT */}
+        <div className="p-4 sm:p-6 space-y-6">
+          {activeTab === 'pos' && (
+            <POSView 
+              settings={settings} 
+              inventory={inventory} 
+              recipe={recipe} 
+              portionHpp={portionHpp}
+              onTransactionComplete={handleSaveTransaction} 
+              showToast={showToast} 
+              isOnline={isOnline}
+            />
+          )}
+
+          {activeTab === 'dashboard' && (
+            <DashboardView 
+              transactions={allDisplayedTransactions} 
+              expenses={expenses} 
+              portionHpp={portionHpp} 
+            />
+          )}
+
+          {activeTab === 'history' && (
+            <HistoryView 
+              transactions={allDisplayedTransactions} 
+              onVoidTransaction={handleVoidTransaction} 
+            />
+          )}
+
+          {activeTab === 'inventory' && (
+            <InventoryView 
+              inventory={inventory} 
+              onUpdateItem={handleUpdateInventoryItem} 
+            />
+          )}
+
+          {activeTab === 'recipe' && (
+            <RecipeView 
+              recipe={recipe} 
+              setRecipe={(newRec) => handleSaveConfig(settings, newRec)} 
+              inventory={inventory} 
+              portionHpp={portionHpp}
+            />
+          )}
+
+          {activeTab === 'expenses' && (
+            <ExpensesView 
+              expenses={expenses} 
+              onAddExpense={handleAddExpense} 
+            />
+          )}
+
+          {activeTab === 'financials' && (
+            <FinancialsView transactions={allDisplayedTransactions} expenses={expenses} />
+          )}
+
+          {activeTab === 'archive' && (
+            <ArchiveView transactions={allDisplayedTransactions} />
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsView 
+              settings={settings} 
+              onSaveSettings={(newSet) => handleSaveConfig(newSet, recipe)} 
+              user={user}
+              showToast={showToast}
+              allData={{ settings, inventory, transactions: allDisplayedTransactions, expenses, recipe }}
+            />
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// --- SUB-COMPONENTS ---
+
+// 1. POS VIEW
+function POSView({ settings, inventory, recipe, portionHpp, onTransactionComplete, showToast, isOnline }) {
+  const [portions, setPortions] = useState(1);
+  const [selectedSate, setSelectedSate] = useState({ ampela: 0, ati: 0, usus: 0, telurPuyuh: 0 });
+  const [paymentMethod, setPaymentMethod] = useState('TUNAI');
+  const [cashAmount, setCashAmount] = useState('');
+  const [showReceipt, setShowReceipt] = useState(null);
+
+  const sateTotal = (selectedSate.ampela * settings.satePrices.ampela) +
+                    (selectedSate.ati * settings.satePrices.ati) +
+                    (selectedSate.usus * settings.satePrices.usus) +
+                    (selectedSate.telurPuyuh * settings.satePrices.telurPuyuh);
+
+  const subtotal = (portions * settings.portionPrice) + sateTotal;
+  const change = Math.max(0, (parseFloat(cashAmount) || 0) - subtotal);
+
+  const handleCheckout = () => {
+    if (portions < 1) return showToast("Porsi minimal 1", "error");
+    if (paymentMethod === 'TUNAI' && (parseFloat(cashAmount) || 0) < subtotal) {
+      return showToast("Uang tunai kurang dari total pembayaran", "error");
+    }
+
+    // Build atomic stock deduction list
+    const stockDeductions = [];
+    recipe.forEach(item => {
+      stockDeductions.push({ id: item.inventoryId, amount: item.qtyPerPortion * portions });
+    });
+
+    const sateMapping = { ampela: '8', ati: '9', usus: '10', telurPuyuh: '11' };
+    Object.entries(selectedSate).forEach(([key, count]) => {
+      if (count > 0) {
+        stockDeductions.push({ id: sateMapping[key], amount: count });
+      }
+    });
+
+    // Generate collision-proof unique transaction ID (Timestamp + Random Suffix)
+    const uniqueSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const newTrx = {
+      id: `TRX-${Date.now().toString().slice(-6)}-${uniqueSuffix}`,
+      date: new Date().toISOString(),
+      portions,
+      sate: { ...selectedSate },
+      totalPrice: subtotal,
+      hppTotal: (portionHpp * portions) + (selectedSate.ampela * 1000) + (selectedSate.ati * 1000) + (selectedSate.usus * 900) + (selectedSate.telurPuyuh * 1200),
+      paymentMethod,
+      cashAmount: paymentMethod === 'TUNAI' ? (parseFloat(cashAmount) || subtotal) : subtotal,
+      change: paymentMethod === 'TUNAI' ? change : 0,
+      status: 'COMPLETED',
+      deviceOrigin: /Android|iPhone|iPad/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop'
+    };
+
+    onTransactionComplete(newTrx, stockDeductions);
+    setShowReceipt(newTrx);
+    setPortions(1);
+    setSelectedSate({ ampela: 0, ati: 0, usus: 0, telurPuyuh: 0 });
+    setCashAmount('');
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* Left Column: Menu Items Selection */}
+      <div className="lg:col-span-7 space-y-6">
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-stone-200">
+          <h3 className="font-bold text-sm text-stone-800 mb-3 flex items-center gap-2">
+            <span>🥣</span> Bubur Ayam Porsi Utama
+          </h3>
+          <div className="flex items-center justify-between bg-stone-50 p-4 rounded-xl border border-stone-200">
+            <div>
+              <p className="font-bold text-stone-800 text-sm">Bubur Ayam Komplit</p>
+              <p className="text-xs text-amber-600 font-semibold">{formatRp(settings.portionPrice)} / porsi</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setPortions(Math.max(1, portions - 1))}
+                className="w-11 h-11 rounded-xl bg-stone-200 hover:bg-stone-300 flex items-center justify-center font-bold text-stone-800 transition-colors"
+              >
+                <Minus className="w-5 h-5"/>
+              </button>
+              <span className="font-black text-xl text-stone-800 w-8 text-center">{portions}</span>
+              <button 
+                onClick={() => setPortions(portions + 1)}
+                className="w-11 h-11 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 flex items-center justify-center font-bold transition-colors"
+              >
+                <Plus className="w-5 h-5"/>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-stone-200">
+          <h3 className="font-bold text-sm text-stone-800 mb-3 flex items-center gap-2">
+            <span>🍢</span> Sate Tambahan ({formatRp(settings.satePrices.ampela)}/tusuk)
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {[
+              { key: 'ampela', label: 'Sate Ampela' },
+              { key: 'ati', label: 'Sate Ati' },
+              { key: 'usus', label: 'Sate Usus' },
+              { key: 'telurPuyuh', label: 'Sate Telur Puyuh' }
+            ].map(item => (
+              <div key={item.key} className="bg-stone-50 p-3.5 rounded-xl border border-stone-200 flex items-center justify-between">
+                <div>
+                  <p className="font-semibold text-xs text-stone-800">{item.label}</p>
+                  <p className="text-[11px] text-stone-500">{formatRp(settings.satePrices[item.key])}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setSelectedSate({ ...selectedSate, [item.key]: Math.max(0, selectedSate[item.key] - 1) })}
+                    className="w-8 h-8 rounded-lg bg-stone-200 hover:bg-stone-300 flex items-center justify-center font-bold text-stone-800 text-sm"
+                  >
+                    -
+                  </button>
+                  <span className="font-bold text-sm text-stone-800 w-5 text-center">{selectedSate[item.key]}</span>
+                  <button 
+                    onClick={() => setSelectedSate({ ...selectedSate, [item.key]: selectedSate[item.key] + 1 })}
+                    className="w-8 h-8 rounded-lg bg-amber-500 hover:bg-amber-600 text-stone-950 flex items-center justify-center font-bold text-sm"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Right Column: Checkout Summary Panel */}
+      <div className="lg:col-span-5 bg-white rounded-2xl p-5 shadow-sm border border-stone-200 flex flex-col justify-between">
+        <div>
+          <h3 className="font-bold text-base text-stone-800 mb-4 pb-3 border-b border-stone-100 flex items-center justify-between">
+            <span>Ringkasan Pesanan</span>
+            <button 
+              onClick={() => {
+                setPortions(1);
+                setSelectedSate({ ampela: 0, ati: 0, usus: 0, telurPuyuh: 0 });
+              }}
+              className="text-xs text-red-500 font-semibold hover:underline"
+            >
+              Reset
+            </button>
+          </h3>
+
+          <div className="space-y-2 mb-6">
+            <div className="flex justify-between text-xs text-stone-600">
+              <span>{portions}x Bubur Ayam Komplit</span>
+              <span className="font-semibold">{formatRp(portions * settings.portionPrice)}</span>
+            </div>
+            {Object.entries(selectedSate).map(([key, count]) => count > 0 && (
+              <div key={key} className="flex justify-between text-xs text-stone-600">
+                <span className="capitalize">{count}x Sate {key}</span>
+                <span className="font-semibold">{formatRp(count * settings.satePrices[key])}</span>
+              </div>
+            ))}
+            <div className="border-t border-dashed border-stone-200 my-2 pt-2 flex justify-between font-black text-base text-stone-900">
+              <span>TOTAL BAYAR</span>
+              <span className="text-amber-600">{formatRp(subtotal)}</span>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <label className="block text-xs font-bold text-stone-700">Metode Pembayaran</label>
+            <div className="grid grid-cols-3 gap-2">
+              {['TUNAI', 'QRIS', 'TRANSFER'].map(method => (
+                <button 
+                  key={method} 
+                  onClick={() => setPaymentMethod(method)}
+                  className={`py-2.5 rounded-xl text-xs font-bold transition-all border ${
+                    paymentMethod === method 
+                      ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-md' 
+                      : 'bg-stone-50 text-stone-600 border-stone-200 hover:bg-stone-100'
+                  }`}
+                >
+                  {method}
+                </button>
+              ))}
+            </div>
+
+            {paymentMethod === 'TUNAI' && (
+              <div className="mt-3 space-y-2">
+                <label className="block text-xs font-medium text-stone-600">Uang Diterima (Rp)</label>
+                <input 
+                  type="number" 
+                  value={cashAmount}
+                  onChange={(e) => setCashAmount(e.target.value)}
+                  placeholder="Masukkan nominal..."
+                  className="w-full px-3 py-2.5 border border-stone-300 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 outline-none font-bold"
+                />
+                <div className="flex gap-2 pt-1">
+                  {[subtotal, 20000, 50000, 100000].map((preset, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setCashAmount(preset.toString())}
+                      className="flex-1 py-1.5 bg-stone-100 hover:bg-stone-200 rounded-lg text-[11px] font-bold text-stone-700"
+                    >
+                      {i === 0 ? 'Uang Pas' : formatRp(preset)}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex justify-between text-xs font-semibold text-stone-700 pt-1">
+                  <span>Kembalian:</span>
+                  <span className="text-emerald-600 font-bold text-sm">{formatRp(change)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <button 
+          onClick={handleCheckout}
+          className="w-full mt-6 py-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 font-black text-stone-950 text-sm rounded-xl shadow-lg transition-all"
+        >
+          {isOnline ? 'BAYAR & SINKRON CLOUD' : 'SIMPAN KE ANTREAN OFFLINE'}
+        </button>
+
+        {showReceipt && (
+          <ReceiptModal 
+            trx={showReceipt} 
+            settings={settings} 
+            onClose={() => setShowReceipt(null)} 
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 2. DASHBOARD VIEW
+function DashboardView({ transactions, expenses }) {
+  const completedTrx = transactions.filter(t => t.status !== 'VOIDED');
+  
+  const totalOmzet = completedTrx.reduce((acc, t) => acc + t.totalPrice, 0);
+  const totalHpp = completedTrx.reduce((acc, t) => acc + t.hppTotal, 0);
+  const totalExpenses = expenses.reduce((acc, e) => acc + e.amount, 0);
+  const grossProfit = totalOmzet - totalHpp;
+  const netProfit = grossProfit - totalExpenses;
+  const totalPortions = completedTrx.reduce((acc, t) => acc + (t.portions || 0), 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm">
+          <p className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">Total Omzet</p>
+          <p className="text-lg font-black text-stone-900 mt-1">{formatRp(totalOmzet)}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm">
+          <p className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">Total HPP Terjual</p>
+          <p className="text-lg font-black text-amber-600 mt-1">{formatRp(totalHpp)}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm">
+          <p className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">Pengeluaran Operasional</p>
+          <p className="text-lg font-black text-red-600 mt-1">{formatRp(totalExpenses)}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm">
+          <p className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">Laba Bersih</p>
+          <p className={`text-lg font-black mt-1 ${netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+            {formatRp(netProfit)}
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm grid grid-cols-2 gap-4">
+        <div>
+          <p className="text-xs text-stone-500">Total Transaksi Sah</p>
+          <p className="text-xl font-black text-stone-900">{completedTrx.length} Transaksi</p>
+        </div>
+        <div>
+          <p className="text-xs text-stone-500">Total Bubur Terjual</p>
+          <p className="text-xl font-black text-amber-600">{totalPortions} Porsi</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 3. HISTORY VIEW
+function HistoryView({ transactions, onVoidTransaction }) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [voidModalTrx, setVoidModalTrx] = useState(null);
+  const [voidReason, setVoidReason] = useState('');
+
+  const filtered = transactions.filter(t => 
+    t.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    t.paymentMethod.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm space-y-4">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+        <h3 className="font-bold text-sm text-stone-800">Riwayat Transaksi Multi-Perangkat</h3>
+        <input 
+          type="text"
+          placeholder="Cari ID transaksi..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="px-3 py-2 border border-stone-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-amber-500"
+        />
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs text-stone-700">
+          <thead className="bg-stone-50 font-bold border-b border-stone-200">
+            <tr>
+              <th className="p-3">ID TRX</th>
+              <th className="p-3">Waktu</th>
+              <th className="p-3">Perangkat</th>
+              <th className="p-3">Total</th>
+              <th className="p-3">Status Cloud</th>
+              <th className="p-3">Aksi</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-100">
+            {filtered.map(t => (
+              <tr key={t.id} className="hover:bg-stone-50">
+                <td className="p-3 font-bold">{t.id}</td>
+                <td className="p-3">{new Date(t.date).toLocaleString('id-ID')}</td>
+                <td className="p-3 text-[11px] text-stone-500">{t.deviceOrigin || 'Cloud'}</td>
+                <td className="p-3 font-semibold text-amber-600">{formatRp(t.totalPrice)}</td>
+                <td className="p-3">
+                  {t.syncPending ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">
+                      ANTREAN OFFLINE
+                    </span>
+                  ) : (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                      t.status === 'VOIDED' ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-700'
+                    }`}>
+                      {t.status === 'VOIDED' ? 'DIBATALKAN' : 'TERSINKRON'}
+                    </span>
+                  )}
+                </td>
+                <td className="p-3">
+                  {t.status !== 'VOIDED' && !t.syncPending && (
+                    <button 
+                      onClick={() => {
+                        setVoidModalTrx(t);
+                        setVoidReason('');
+                      }}
+                      className="text-red-500 font-bold hover:underline text-[11px]"
+                    >
+                      Batalkan (Void)
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Custom Void Modal (No browser prompt/alert) */}
+      {voidModalTrx && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+            <h4 className="font-bold text-sm text-stone-800">Batalkan Transaksi {voidModalTrx.id}</h4>
+            <p className="text-xs text-stone-500">Omzet akan dikurangi dan stok bahan akan dikembalikan otomatis ke database cloud.</p>
+            <input 
+              type="text"
+              placeholder="Alasan pembatalan (wajib diisi)..."
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              className="w-full px-3 py-2 border rounded-xl text-xs outline-none focus:ring-2 focus:ring-red-500"
+            />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setVoidModalTrx(null)} className="px-3 py-2 text-xs font-semibold text-stone-600">Batal</button>
+              <button 
+                onClick={() => {
+                  if (!voidReason.trim()) return;
+                  onVoidTransaction(voidModalTrx.id, voidReason);
+                  setVoidModalTrx(null);
+                }}
+                className="px-4 py-2 bg-red-600 text-white font-bold text-xs rounded-xl"
+              >
+                Konfirmasi Void
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 4. INVENTORY VIEW
+function InventoryView({ inventory, onUpdateItem }) {
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+
+  const handleEditClick = (item) => {
+    setEditingId(item.id);
+    setEditForm({ ...item });
+  };
+
+  const handleSave = () => {
+    onUpdateItem({
+      ...editForm,
+      buyPrice: parseFloat(editForm.buyPrice) || 0,
+      stock: parseFloat(editForm.stock) || 0
+    });
+    setEditingId(null);
+  };
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm space-y-4">
+      <h3 className="font-bold text-sm text-stone-800">Manajemen Stok & Harga Beli Bahan (Cloud Sync)</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs text-stone-700">
+          <thead className="bg-stone-50 font-bold border-b border-stone-200">
+            <tr>
+              <th className="p-3">Nama Bahan</th>
+              <th className="p-3">Kategori</th>
+              <th className="p-3">Stok</th>
+              <th className="p-3">Harga Beli / Satuan</th>
+              <th className="p-3">Aksi</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-100">
+            {inventory.map(item => (
+              <tr key={item.id}>
+                {editingId === item.id ? (
+                  <>
+                    <td className="p-3"><input type="text" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} className="px-2 py-1 border rounded text-xs w-full"/></td>
+                    <td className="p-3">{item.category}</td>
+                    <td className="p-3"><input type="number" step="0.01" value={editForm.stock} onChange={e => setEditForm({...editForm, stock: e.target.value})} className="px-2 py-1 border rounded text-xs w-20"/> {item.unit}</td>
+                    <td className="p-3"><input type="number" value={editForm.buyPrice} onChange={e => setEditForm({...editForm, buyPrice: e.target.value})} className="px-2 py-1 border rounded text-xs w-28"/></td>
+                    <td className="p-3">
+                      <button onClick={handleSave} className="text-emerald-600 font-bold hover:underline">Simpan</button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="p-3 font-semibold">{item.name}</td>
+                    <td className="p-3 text-stone-500">{item.category}</td>
+                    <td className="p-3">
+                      <span className={`font-bold ${item.stock <= item.minStock ? 'text-red-600' : 'text-stone-800'}`}>
+                        {Number(item.stock).toFixed(2).replace(/\.00$/, '')}
+                      </span> {item.unit}
+                    </td>
+                    <td className="p-3 font-semibold text-stone-800">{formatRp(item.buyPrice)} / {item.unit}</td>
+                    <td className="p-3">
+                      <button onClick={() => handleEditClick(item)} className="text-amber-600 font-bold hover:underline">Edit Harga/Stok</button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// 5. RECIPE VIEW
+function RecipeView({ recipe, setRecipe, inventory, portionHpp }) {
+  const [editingIdx, setEditingIdx] = useState(null);
+  const [editQty, setEditQty] = useState('');
+
+  const handleSaveQty = (idx) => {
+    const updated = recipe.map((r, i) => i === idx ? { ...r, qtyPerPortion: parseFloat(editQty) || 0 } : r);
+    setRecipe(updated);
+    setEditingIdx(null);
+  };
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm space-y-4">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+        <h3 className="font-bold text-sm text-stone-800">Formulasi Resep & HPP Per Porsi</h3>
+        <span className="text-xs font-black bg-amber-100 text-amber-800 px-3 py-1.5 rounded-full self-start">
+          HPP 1 Porsi: {formatRp(portionHpp)}
+        </span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs text-stone-700">
+          <thead className="bg-stone-50 font-bold border-b border-stone-200">
+            <tr>
+              <th className="p-3">Bahan / Kemasan</th>
+              <th className="p-3">Takaran Per Porsi</th>
+              <th className="p-3">Harga Beli Bahan</th>
+              <th className="p-3">Biaya Per Porsi</th>
+              <th className="p-3">Aksi</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-100">
+            {recipe.map((item, idx) => {
+              const inv = inventory.find(i => i.id === item.inventoryId);
+              const itemCost = inv ? inv.buyPrice * item.qtyPerPortion : 0;
+              return (
+                <tr key={idx}>
+                  <td className="p-3 font-bold">{item.name}</td>
+                  <td className="p-3">
+                    {editingIdx === idx ? (
+                      <input 
+                        type="number" 
+                        step="0.001" 
+                        value={editQty} 
+                        onChange={(e) => setEditQty(e.target.value)}
+                        className="w-24 px-2 py-1 border rounded text-xs"
+                      />
+                    ) : (
+                      `${item.qtyPerPortion} ${item.unit}`
+                    )}
+                  </td>
+                  <td className="p-3 text-stone-500">{inv ? formatRp(inv.buyPrice) : 0} / {item.unit}</td>
+                  <td className="p-3 font-semibold text-amber-600">{formatRp(itemCost)}</td>
+                  <td className="p-3">
+                    {editingIdx === idx ? (
+                      <button onClick={() => handleSaveQty(idx)} className="text-emerald-600 font-bold hover:underline">Simpan</button>
+                    ) : (
+                      <button onClick={() => { setEditingIdx(idx); setEditQty(item.qtyPerPortion.toString()); }} className="text-amber-600 font-bold hover:underline">Ubah Takaran</button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// 6. EXPENSES VIEW
+function ExpensesView({ expenses, onAddExpense }) {
+  const [title, setTitle] = useState('');
+  const [amount, setAmount] = useState('');
+
+  const handleAdd = (e) => {
+    e.preventDefault();
+    if (!title || !amount) return;
+    const newExp = {
+      id: 'EXP-' + Date.now().toString().slice(-6),
+      title,
+      amount: parseFloat(amount),
+      date: new Date().toISOString()
+    };
+    onAddExpense(newExp);
+    setTitle('');
+    setAmount('');
+  };
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+      <div className="md:col-span-5 bg-white rounded-2xl p-5 border border-stone-200 shadow-sm">
+        <h3 className="font-bold text-sm text-stone-800 mb-4">Catat Pengeluaran Operasional</h3>
+        <form onSubmit={handleAdd} className="space-y-3">
+          <div>
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Keterangan / Item</label>
+            <input 
+              type="text" 
+              value={title} 
+              onChange={e => setTitle(e.target.value)} 
+              placeholder="Contoh: Beli Gas LPG 3kg / Listrik" 
+              required 
+              className="w-full px-3 py-2 border rounded-xl text-xs outline-none focus:ring-2 focus:ring-amber-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Biaya (Rp)</label>
+            <input 
+              type="number" 
+              value={amount} 
+              onChange={e => setAmount(e.target.value)} 
+              placeholder="0" 
+              required 
+              className="w-full px-3 py-2 border rounded-xl text-xs outline-none focus:ring-2 focus:ring-amber-500 font-bold"
+            />
+          </div>
+          <button type="submit" className="w-full py-2.5 bg-amber-500 font-bold text-xs text-stone-950 rounded-xl shadow-md">
+            Simpan Pengeluaran ke Cloud
+          </button>
+        </form>
+      </div>
+
+      <div className="md:col-span-7 bg-white rounded-2xl p-5 border border-stone-200 shadow-sm">
+        <h3 className="font-bold text-sm text-stone-800 mb-3">Daftar Pengeluaran Operasional</h3>
+        <div className="space-y-2">
+          {expenses.map(exp => (
+            <div key={exp.id} className="flex justify-between items-center p-3 bg-stone-50 rounded-xl border border-stone-200 text-xs">
+              <div>
+                <p className="font-bold text-stone-800">{exp.title}</p>
+                <p className="text-[10px] text-stone-500">{new Date(exp.date).toLocaleDateString('id-ID')}</p>
+              </div>
+              <span className="font-bold text-red-600">{formatRp(exp.amount)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 7. FINANCIALS VIEW
+function FinancialsView({ transactions, expenses }) {
+  const completedTrx = transactions.filter(t => t.status !== 'VOIDED');
+  const totalOmzet = completedTrx.reduce((acc, t) => acc + t.totalPrice, 0);
+  const totalHpp = completedTrx.reduce((acc, t) => acc + t.hppTotal, 0);
+  const totalExp = expenses.reduce((acc, e) => acc + e.amount, 0);
+  const gross = totalOmzet - totalHpp;
+  const net = gross - totalExp;
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm max-w-2xl mx-auto space-y-4">
+      <h3 className="font-bold text-base text-stone-800 border-b pb-2">Laporan Laba Rugi (Real-Time Cloud)</h3>
+      <div className="space-y-3 text-xs">
+        <div className="flex justify-between py-1 border-b">
+          <span>Penjualan Kotor (Omzet)</span>
+          <span className="font-bold">{formatRp(totalOmzet)}</span>
+        </div>
+        <div className="flex justify-between py-1 border-b text-red-600">
+          <span>Harga Pokok Penjualan (HPP)</span>
+          <span className="font-bold">({formatRp(totalHpp)})</span>
+        </div>
+        <div className="flex justify-between py-1 border-b font-bold text-stone-800">
+          <span>Laba Kotor</span>
+          <span>{formatRp(gross)}</span>
+        </div>
+        <div className="flex justify-between py-1 border-b text-red-600">
+          <span>Total Biaya Operasional</span>
+          <span className="font-bold">({formatRp(totalExp)})</span>
+        </div>
+        <div className={`flex justify-between py-2 font-black text-sm ${net >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+          <span>LABA BERSIH</span>
+          <span>{formatRp(net)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 8. ARCHIVE VIEW
+function ArchiveView({ transactions }) {
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm text-xs space-y-2">
+      <h3 className="font-bold text-sm text-stone-800">Arsip Harian & Bulanan</h3>
+      <p className="text-stone-500">Total data transaksi tersinkron di Cloud: <span className="font-bold text-stone-900">{transactions.length} transaksi</span>.</p>
+    </div>
+  );
+}
+
+// 9. SETTINGS & SECURITY VIEW
+function SettingsView({ settings, onSaveSettings, user, showToast, allData }) {
+  const [form, setForm] = useState({ ...settings });
+
+  useEffect(() => {
+    setForm({ ...settings });
+  }, [settings]);
+
+  const handleSave = (e) => {
+    e.preventDefault();
+    onSaveSettings(form);
+  };
+
+  const handlePasswordReset = async () => {
+    if (!user?.email) {
+      showToast("Akun demo tidak memiliki email terdaftar untuk reset password.", "warning");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, user.email);
+      showToast(`Tautan ubah password dikirim ke ${user.email}`);
+    } catch (err) {
+      showToast("Gagal mengirim email reset password: " + err.message, "error");
+    }
+  };
+
+  const handleExport = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(allData));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `backup-bubur-pos-${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm max-w-xl mx-auto space-y-6">
+      <h3 className="font-bold text-sm text-stone-800 border-b pb-2">Pengaturan Toko & Keamanan Single Owner</h3>
+      <form onSubmit={handleSave} className="space-y-3 text-xs">
+        <div>
+          <label className="block font-semibold mb-1">Nama Usaha</label>
+          <input 
+            type="text" 
+            value={form.storeName} 
+            onChange={e => setForm({...form, storeName: e.target.value})} 
+            className="w-full px-3 py-2 border rounded-xl outline-none"
+          />
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Alamat Toko</label>
+          <input 
+            type="text" 
+            value={form.address} 
+            onChange={e => setForm({...form, address: e.target.value})} 
+            className="w-full px-3 py-2 border rounded-xl outline-none"
+          />
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Harga 1 Porsi Bubur (Rp)</label>
+          <input 
+            type="number" 
+            value={form.portionPrice} 
+            onChange={e => setForm({...form, portionPrice: parseFloat(e.target.value) || 0})} 
+            className="w-full px-3 py-2 border rounded-xl outline-none font-bold"
+          />
+        </div>
+        <button type="submit" className="w-full py-2.5 bg-amber-500 font-bold text-stone-950 rounded-xl shadow">
+          Simpan Pengaturan ke Cloud
+        </button>
+      </form>
+
+      <div className="border-t pt-4 space-y-3">
+        <h4 className="font-bold text-xs text-stone-800 flex items-center gap-1.5">
+          <KeyRound className="w-4 h-4 text-amber-600" /> Keamanan Akun Pemilik
+        </h4>
+        <p className="text-[11px] text-stone-500">
+          Akun terhubung: <span className="font-bold text-stone-800">{user?.email || 'Sesi Cloud Terisolasi'}</span>
+        </p>
+        <button 
+          type="button"
+          onClick={handlePasswordReset} 
+          className="w-full py-2 bg-stone-100 hover:bg-stone-200 text-stone-800 font-bold text-xs rounded-xl border border-stone-300"
+        >
+          Kirim Email Reset / Ubah Password
+        </button>
+      </div>
+
+      <div className="border-t pt-4 space-y-2">
+        <h4 className="font-bold text-xs text-stone-800">Backup Lokal</h4>
+        <button onClick={handleExport} className="w-full py-2 bg-stone-800 text-white font-bold text-xs rounded-xl">
+          Download Backup Data (.JSON)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 10. RECEIPT MODAL
+function ReceiptModal({ trx, settings, onClose }) {
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4 shadow-2xl font-mono text-xs">
+        <div className="text-center space-y-1">
+          <h2 className="font-black text-sm tracking-wider uppercase">{settings.storeName}</h2>
+          <p className="text-[10px] text-stone-500">{settings.address}</p>
+        </div>
+        <div className="border-t border-b border-dashed py-2 space-y-1">
+          <div className="flex justify-between">
+            <span>ID: {trx.id}</span>
+            <span>{new Date(trx.date).toLocaleTimeString('id-ID')}</span>
+          </div>
+        </div>
+        <div className="space-y-1">
+          <div className="flex justify-between">
+            <span>{trx.portions}x Bubur Ayam</span>
+            <span>{formatRp(trx.portions * settings.portionPrice)}</span>
+          </div>
+          {Object.entries(trx.sate).map(([k, count]) => count > 0 && (
+            <div key={k} className="flex justify-between text-[11px] text-stone-600">
+              <span>{count}x Sate {k}</span>
+              <span>{formatRp(count * (settings.satePrices[k] || 2000))}</span>
+            </div>
+          ))}
+        </div>
+        <div className="border-t border-dashed pt-2 space-y-1 font-bold">
+          <div className="flex justify-between">
+            <span>TOTAL</span>
+            <span>{formatRp(trx.totalPrice)}</span>
+          </div>
+          <div className="flex justify-between text-[10px] text-stone-500 font-normal">
+            <span>BAYAR ({trx.paymentMethod})</span>
+            <span>{formatRp(trx.cashAmount)}</span>
+          </div>
+          <div className="flex justify-between text-[10px] text-stone-500 font-normal">
+            <span>KEMBALI</span>
+            <span>{formatRp(trx.change)}</span>
+          </div>
+        </div>
+        <div className="text-center pt-2 text-[10px] text-stone-400">
+          {settings.footerText}
+        </div>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => window.print()} 
+            className="flex-1 py-2.5 bg-stone-800 font-sans font-bold text-white text-xs rounded-xl shadow flex items-center justify-center gap-1.5"
+          >
+            <Printer className="w-4 h-4" /> Cetak Struk
+          </button>
+          <button 
+            onClick={onClose} 
+            className="flex-1 py-2.5 bg-amber-500 font-sans font-bold text-stone-950 text-xs rounded-xl shadow"
+          >
+            Selesai
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
